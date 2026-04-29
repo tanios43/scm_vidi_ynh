@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
 SCM Vidi — Backend Flask
-API REST simple pour partager les données entre utilisateurs YunoHost.
-
-Stratégie d'authentification :
-- Le HTML est servi par Flask qui injecte l'utilisateur YunoHost directement
-  dans la page via window._YNH_USER et window._YNH_IS_ADMIN.
-- Les appels API (POST /api/state) utilisent un token signé généré au moment
-  du rendu HTML, évitant ainsi les problèmes de CORS / SSOwat.
+API REST pour partager les données entre utilisateurs YunoHost.
 """
 
 import os
+import io
 import json
 import base64
 import hmac
@@ -25,7 +20,6 @@ app = Flask(__name__, static_folder="static")
 # ─── Config ───────────────────────────────────────────────────────────────────
 DB_PATH    = os.environ.get("SCM_DB_PATH",    "/var/lib/scm_vidi/data.db")
 ADMIN_USER = os.environ.get("SCM_ADMIN_USER", "admin")
-# Clé secrète pour signer les tokens — générée une fois au démarrage
 SECRET_KEY = os.environ.get("SCM_SECRET_KEY", os.urandom(32).hex())
 
 # ─── Base de données ──────────────────────────────────────────────────────────
@@ -62,23 +56,19 @@ def init_db():
     db.commit()
     db.close()
 
-# ─── Auth helpers ─────────────────────────────────────────────────────────────
+# ─── Auth ─────────────────────────────────────────────────────────────────────
 
 def make_token(username):
-    """Génère un token signé HMAC valable 24h pour un utilisateur."""
-    expires = int(time.time()) + 86400  # 24h
+    expires = int(time.time()) + 86400
     payload = f"{username}:{expires}"
     sig = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    raw = f"{payload}:{sig}"
-    return base64.b64encode(raw.encode()).decode()
+    return base64.b64encode(f"{payload}:{sig}".encode()).decode()
 
 def verify_token(token):
-    """Vérifie un token signé et retourne le username ou None."""
     try:
         raw = base64.b64decode(token.encode()).decode()
         username, expires_str, sig = raw.rsplit(":", 2)
-        expires = int(expires_str)
-        if time.time() > expires:
+        if time.time() > int(expires_str):
             return None
         payload = f"{username}:{expires_str}"
         expected = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -89,20 +79,12 @@ def verify_token(token):
     return None
 
 def get_current_user():
-    """Récupère l'utilisateur YunoHost depuis la requête HTTP.
-
-    Priorité :
-    1. Token signé dans X-SCM-Token (appels API depuis le JS)
-    2. Authorization Basic (YunoHost 12, requête navigateur)
-    3. Header X-Remote-User (versions antérieures de YunoHost)
-    """
     # Méthode 1 — Token signé (appels API JS)
     token = request.headers.get("X-SCM-Token", "")
     if token:
         user = verify_token(token)
         if user:
             return user
-
     # Méthode 2 — Authorization Basic (YunoHost 12)
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Basic "):
@@ -113,12 +95,10 @@ def get_current_user():
                 return username
         except Exception:
             pass
-
     # Méthode 3 — X-Remote-User (YunoHost < 12)
     remote_user = request.headers.get("X-Remote-User", "")
     if remote_user:
         return remote_user
-
     return "anonymous"
 
 def is_admin():
@@ -132,11 +112,27 @@ def require_admin(f):
         return f(*args, **kwargs)
     return decorated
 
+# ─── Helpers état ─────────────────────────────────────────────────────────────
+
+def get_full_state():
+    """Retourne l'état complet depuis la DB sous forme de dict."""
+    db = get_db()
+    rows = db.execute("SELECT key, value FROM app_state").fetchall()
+    state = {}
+    for row in rows:
+        state[row["key"]] = json.loads(row["value"])
+    # Reconstituer un objet état plat
+    if state and "associes" in state:
+        return state
+    # Compatibilité : état stocké sous une clé "data"
+    if "data" in state:
+        return state["data"]
+    return state
+
 # ─── Routes API ───────────────────────────────────────────────────────────────
 
 @app.route("/api/state", methods=["GET"])
 def get_state():
-    """Retourne l'état complet de l'application."""
     db = get_db()
     rows = db.execute("SELECT key, value FROM app_state").fetchall()
     state = {row["key"]: json.loads(row["value"]) for row in rows}
@@ -149,11 +145,9 @@ def get_state():
 @app.route("/api/state", methods=["POST"])
 @require_admin
 def save_state():
-    """Sauvegarde l'état complet (remplace tout)."""
     data = request.get_json(force=True)
     if not isinstance(data, dict):
         return jsonify({"error": "JSON invalide"}), 400
-
     db = get_db()
     for key, value in data.items():
         db.execute(
@@ -170,7 +164,6 @@ def save_state():
 @app.route("/api/state/<key>", methods=["PUT"])
 @require_admin
 def update_key(key):
-    """Met à jour une clé spécifique de l'état."""
     value = request.get_json(force=True)
     db = get_db()
     db.execute(
@@ -186,7 +179,6 @@ def update_key(key):
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
-    """Retourne les 50 dernières modifications."""
     db = get_db()
     rows = db.execute(
         "SELECT username, action, ts FROM history ORDER BY id DESC LIMIT 50"
@@ -197,16 +189,56 @@ def get_history():
 def whoami():
     return jsonify({"user": get_current_user(), "is_admin": is_admin()})
 
+# ─── Export Excel ─────────────────────────────────────────────────────────────
+
+@app.route("/api/export/excel/<int:annee>")
+def export_excel(annee):
+    """Génère et télécharge le fichier Excel pour l'année demandée."""
+    try:
+        import sys
+        src_dir = os.path.dirname(os.path.abspath(__file__))
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        import export_excel as ex
+
+        data = get_full_state()
+        if not data or "associes" not in data:
+            return jsonify({"error": "Aucune donnée disponible"}), 404
+
+        from openpyxl import Workbook
+        wb = Workbook()
+        ex.build_recap(wb, data, annee)
+        for mo in range(12):
+            ex.build_mois(wb, data, annee, mo)
+        assocs = [a for a in data["associes"] if a.get("actif")]
+        for a in assocs:
+            ex.build_ortho(wb, data, annee, a)
+
+        # Sauvegarder dans un buffer mémoire
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        return Response(
+            buf.read(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=SCM_Vidi_{annee}.xlsx"
+            }
+        )
+    except ImportError as e:
+        return jsonify({"error": f"Dépendance manquante : {e}"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ─── Servir l'app HTML ────────────────────────────────────────────────────────
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve(path):
-    # Fichiers statiques (CSS, JS, images...)
     if path and os.path.exists(os.path.join(app.static_folder, path)):
         return send_from_directory(app.static_folder, path)
 
-    # Page principale — injection de l'utilisateur et d'un token signé
     user  = get_current_user()
     admin = user == ADMIN_USER
     token = make_token(user) if user != "anonymous" else ""
@@ -220,7 +252,6 @@ window._YNH_IS_ADMIN = {"true" if admin else "false"};
 window._YNH_TOKEN    = "{token}";
 </script>"""
     html = html.replace("</head>", injection + "\n</head>", 1)
-
     return Response(html, mimetype="text/html")
 
 # ─── Démarrage ────────────────────────────────────────────────────────────────

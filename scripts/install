@@ -18,7 +18,7 @@ chown -R "$app:$app" "$data_dir"
 
 ynh_script_progression --message="Installation des dépendances Python..." --weight=5
 python3 -m venv "$install_dir/venv"
-"$install_dir/venv/bin/pip" install --quiet flask
+"$install_dir/venv/bin/pip" install --quiet flask openpyxl
 
 ynh_script_progression --message="Configuration Nginx..." --weight=1
 ynh_add_nginx_config

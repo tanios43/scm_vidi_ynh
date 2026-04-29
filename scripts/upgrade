@@ -18,7 +18,7 @@ cp -r "$YNH_APP_BASEDIR/sources/." "$install_dir/"
 chown -R "$app:$app" "$install_dir"
 
 ynh_script_progression --message="Mise à jour des dépendances Python..." --weight=3
-"$install_dir/venv/bin/pip" install --quiet --upgrade flask
+"$install_dir/venv/bin/pip" install --quiet --upgrade flask openpyxl
 
 ynh_script_progression --message="Mise à jour de la config..." --weight=1
 ynh_add_nginx_config

@@ -357,14 +357,7 @@ input[type=color]{width:42px;height:32px;padding:2px 3px;border-radius:6px;borde
       <button class="btn bp" style="background:#1B5E20" onclick="exportExcelGuide()">📊 Générer Excel <span id="lbl-export-annee2">2025</span></button>
       <span style="font-size:.76rem;color:var(--mu)">Plannings, charges réelles, CA et avances de cette année uniquement.</span>
     </div>
-    <div id="excel-guide" style="display:none;background:#F0F7F0;border:1px solid #A5D6A7;border-radius:8px;padding:.85rem 1rem;font-size:.82rem;line-height:1.6;color:#1B5E20">
-      <strong>📋 Pour générer le fichier Excel :</strong><br>
-      1. Cliquez sur <strong>⬇ Exporter [année] (JSON)</strong> — un fichier <code>scm_vidi_[année].json</code> est téléchargé<br>
-      2. Placez ce fichier dans le même dossier que <strong>export_excel.py</strong><br>
-      3. Ouvrez un terminal dans ce dossier et exécutez :<br>
-      <code style="display:block;background:#fff;padding:.4rem .7rem;border-radius:5px;margin:.4rem 0;font-size:.85rem;border:1px solid #C8E6C9">python export_excel.py scm_vidi_<span id="guide-annee">2025</span>.json</code>
-      4. Le fichier <strong>SCM_Vidi_[année].xlsx</strong> est créé dans le même dossier.
-    </div>
+    <div id="excel-guide" style="display:none"></div>
   </div></div>
 
   <div class="st" style="margin-top:1.4rem">Réinitialisation</div>
@@ -778,12 +771,27 @@ function updateTaux(val){
 
 function exportExcelGuide(){
   const sel=document.getElementById('sel-export-annee');
-  const yr=sel?sel.value:'2025';
-  exportAnnee();
-  const guide=document.getElementById('excel-guide');
-  const ga=document.getElementById('guide-annee');
-  if(guide){guide.style.display='block';}
-  if(ga){ga.textContent=yr;}
+  const yr=sel?parseInt(sel.value):new Date().getFullYear();
+  // Génération Excel directement via le serveur
+  const btn=document.querySelector('[onclick*="exportExcelGuide"]');
+  const origTxt=btn?btn.textContent:'';
+  if(btn){btn.textContent='⏳ Génération...';btn.disabled=true;}
+  fetch(`/api/export/excel/${yr}`,{
+    headers:{'X-SCM-Token':window._YNH_TOKEN||''}
+  })
+  .then(r=>{
+    if(!r.ok) return r.json().then(e=>{throw new Error(e.error||'Erreur serveur');});
+    return r.blob();
+  })
+  .then(blob=>{
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`SCM_Vidi_${yr}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  })
+  .catch(e=>alert('Erreur export Excel : '+e.message))
+  .finally(()=>{if(btn){btn.textContent=origTxt;btn.disabled=false;}});
 }
 
 function exportAnnee(){
