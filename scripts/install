@@ -1,0 +1,44 @@
+#!/bin/bash
+source /usr/share/yunohost/helpers
+
+admin=$(ynh_app_setting_get --app=$app --key=admin)
+port=$(ynh_app_setting_get --app=$app --key=port)
+install_dir=$(ynh_app_setting_get --app=$app --key=install_dir)
+data_dir=$(ynh_app_setting_get --app=$app --key=data_dir)
+secret_key=$(openssl rand -hex 32)
+ynh_app_setting_set --app=$app --key=secret_key --value=$secret_key
+
+ynh_script_progression --message="Copie des fichiers..." --weight=2
+cp -r "$YNH_APP_BASEDIR/sources/." "$install_dir/"
+chmod 750 "$install_dir"
+chown -R "$app:$app" "$install_dir"
+
+mkdir -p "$data_dir"
+chown -R "$app:$app" "$data_dir"
+
+ynh_script_progression --message="Installation des dépendances Python..." --weight=5
+python3 -m venv "$install_dir/venv"
+"$install_dir/venv/bin/pip" install --quiet flask
+
+ynh_script_progression --message="Configuration Nginx..." --weight=1
+ynh_add_nginx_config
+
+ynh_script_progression --message="Configuration systemd..." --weight=1
+ynh_add_systemd_config
+ynh_replace_string --match_string="__ADMIN__"      --replace_string="$admin"      --target_file="/etc/systemd/system/$app.service"
+ynh_replace_string --match_string="__SECRET_KEY__" --replace_string="$secret_key" --target_file="/etc/systemd/system/$app.service"
+systemctl daemon-reload
+yunohost service add "$app" --description="SCM Vidi backend"
+
+ynh_script_progression --message="Initialisation de la base de données..." --weight=1
+pushd "$install_dir"
+SCM_DB_PATH="$data_dir/data.db" SCM_ADMIN_USER="$admin" SCM_PORT="$port" SCM_SECRET_KEY="$secret_key" \
+    "$install_dir/venv/bin/python" -c "import app as a; a.init_db()"
+popd
+chown "$app:$app" "$data_dir/data.db" 2>/dev/null || true
+
+ynh_script_progression --message="Démarrage du service..." --weight=2
+ynh_systemd_action --service_name="$app" --action="enable"
+ynh_systemd_action --service_name="$app" --action="start"
+
+ynh_script_progression --message="Installation terminée !" --last

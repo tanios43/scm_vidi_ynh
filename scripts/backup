@@ -1,0 +1,11 @@
+#!/bin/bash
+source /usr/share/yunohost/helpers
+
+install_dir=$(ynh_app_setting_get --app=$app --key=install_dir)
+data_dir=$(ynh_app_setting_get --app=$app --key=data_dir)
+
+ynh_script_progression --message="Sauvegarde..." --weight=1
+ynh_backup --src_path="$install_dir"
+ynh_backup --src_path="$data_dir"
+
+ynh_script_progression --message="Sauvegarde terminée." --last

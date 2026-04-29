@@ -1,0 +1,21 @@
+[Unit]
+Description=SCM Vidi — Flask backend
+After=network.target
+
+[Service]
+Type=simple
+User=__APP__
+Group=__APP__
+
+WorkingDirectory=__INSTALL_DIR__
+Environment="SCM_PORT=__PORT__"
+Environment="SCM_DB_PATH=__DATA_DIR__/data.db"
+Environment="SCM_ADMIN_USER=__ADMIN__"
+Environment="SCM_SECRET_KEY=__SECRET_KEY__"
+ExecStart=__INSTALL_DIR__/venv/bin/python app.py
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
